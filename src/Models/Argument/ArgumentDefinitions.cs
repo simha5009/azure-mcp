@@ -170,6 +170,16 @@ public static class ArgumentDefinitions
             QueryName,
             "The search query to execute against the Azure AI Search index.",
             required: true
+          );
+    }
+    public static class Migration
+    {
+        public const string ProjectName = "project-name";
+
+        public static readonly ArgumentDefinition<string> Project = new(
+            ProjectName,
+            "The name of the migration project to query.",
+            required: true
         );
     }
 

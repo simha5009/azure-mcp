@@ -48,6 +48,21 @@ azmcp cosmos database container item query --subscription <subscription> \
                        [--query "SELECT * FROM c"]
 ```
 
+### Migration operations
+```bash
+# List migrate projects in a subscription
+azmcp migrate project list --subscription <subscription>
+
+# Fetch details of a Migration project
+azmcp migrate project detail --project-name <ProjectName> --subscription <subscription>
+
+# Fetch inventory/discovery details of a Migration project
+azmcp migrate inventory summarize --project-name <ProjectName> --subscription <subscription>
+
+# Summarize businesscase of migrate project
+azmcp migrate project businesscase summarize
+```
+
 ### Storage Operations
 ```bash
 # List Storage accounts in a subscription

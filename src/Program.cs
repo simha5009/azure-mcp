@@ -19,6 +19,9 @@ using AzureMcp.Services.Interfaces;
 using AzureMcp.Services.ProcessExecution;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
+using System.CommandLine;
+using System.Text.Json;
+using AzureMcp.Services.Azure;
 
 try
 {
@@ -63,5 +66,6 @@ static void ConfigureServices(IServiceCollection services)
     services.AddSingleton<IResourceGroupService, ResourceGroupService>();
     services.AddSingleton<IAppConfigService, AppConfigService>();
     services.AddSingleton<ISearchService, SearchService>();
+    services.AddSingleton<IMigrationService, MigrationService>();
     services.AddSingleton<CommandFactory>();
 }

@@ -6,7 +6,10 @@ using System.Reflection;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using AzureMcp.Arguments.Migration;
 using AzureMcp.Commands.Cosmos;
+using AzureMcp.Commands.Migration;
+using AzureMcp.Commands.Migration.Inventory;
 using AzureMcp.Commands.Server;
 using AzureMcp.Commands.Storage.Blob;
 using AzureMcp.Commands.Subscription;
@@ -83,6 +86,7 @@ public class CommandFactory
         RegisterSubscriptionCommands();
         RegisterGroupCommands();
         RegisterMcpServerCommands();
+        RegisterMigrationCommands();
     }
 
     private void RegisterCosmosCommands()
@@ -257,6 +261,24 @@ public class CommandFactory
         var startServer = new ServiceStartCommand(_serviceProvider);
         mcpServer.AddCommand("start", startServer);
 
+    }
+
+    private void RegisterMigrationCommands()
+    {
+        // Create Migration command group
+        var migration = new CommandGroup("migrate", "Migrate operations - Commands for managing and listing migrate projects.");
+        _rootGroup.AddSubGroup(migration);
+
+        var projects = new CommandGroup("project", "Migrate project operations - Commands for listing projects and fetching/summarizing project discovery data details in a subscription");
+        migration.AddSubGroup(projects);
+
+        // Register Migration commands
+        projects.AddCommand("list", new MigrateProjectListCommand(GetLogger<MigrateProjectListCommand>()));
+        projects.AddCommand("detail", new ProjectDetailCommand(GetLogger<ProjectDetailCommand>()));
+        projects.AddCommand("summarize", new InventorySummarizeCommand(GetLogger<InventorySummarizeCommand>()));
+
+        // Register the new business case summarize command
+        projects.AddCommand("businesscase-summarize", new MigrateBusinessCaseSummarizeCommand(GetLogger<MigrateBusinessCaseSummarizeCommand>()));
     }
 
     private void ConfigureCommands(CommandGroup group)
