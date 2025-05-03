@@ -18,6 +18,7 @@ using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using System.CommandLine;
 using System.Text.Json;
+using AzureMcp.Services.Azure;
 
 try
 {
@@ -62,5 +63,6 @@ static void ConfigureServices(IServiceCollection services)
     services.AddSingleton<IMonitorService, MonitorService>();
     services.AddSingleton<IResourceGroupService, ResourceGroupService>();
     services.AddSingleton<IAppConfigService, AppConfigService>();
+    services.AddSingleton<IMigrationService, MigrationService>();
     services.AddSingleton<CommandFactory>();
 }

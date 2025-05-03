@@ -143,6 +143,17 @@ public static class ArgumentDefinitions
         );
     }
 
+    public static class Migration
+    {
+        public const string ProjectName = "project-name";
+
+        public static readonly ArgumentDefinition<string> Project = new(
+            ProjectName,
+            "The name of the migration project to query.",
+            required: true
+        );
+    }
+
     public static class Monitor
     {
         public const string WorkspaceIdOrName = "workspace";

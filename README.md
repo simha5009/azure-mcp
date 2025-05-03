@@ -60,6 +60,12 @@ The Azure MCP Server provides tools for interacting with the following Azure ser
 - List and query Storage tables
 - Get container properties and metadata
 
+### 💾 Azure Migrate
+- List Migrate Projects
+- Get details of a migrate project
+- Summarize project inventory
+- Summarize businesscase of a migrate project
+
 ### 📈 Azure Monitor (Log Analytics)
 - List Log Analytics workspaces
 - Query logs using KQL
