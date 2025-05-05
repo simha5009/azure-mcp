@@ -1,29 +1,34 @@
-using AzureMcp.Services.Interfaces;
-using Azure.Identity;
-using Azure.Core;
-using System.Net.Http;
-using System.Text.Json;
 using System.Text;
+using System.Text.Json;
+using Azure.Core;
 using AzureMcp.Services.Azure.Authentication;
-using Azure.ResourceManager.ResourceGraph;
+using AzureMcp.Services.Interfaces;
 
 namespace AzureMcp.Services.Azure;
 
-public class MigrationService : IMigrationService
+public class MigrationService(CustomChainedCredential? credential = null) : IMigrationService
 {
-    private static readonly string ARGurl = "https://management.azure.com/providers/Microsoft.ResourceGraph/resources?api-version=2024-04-01";
+    // API base URLs
+    private const string AzureManagementBaseUrl = "https://management.azure.com";
 
+    // API versions
+    private const string ResourceGraphApiVersion = "2024-04-01";
+    private const string MigrateProjectApiVersion = "2020-06-01-preview";
+    private const string MasterSiteApiVersion = "2020-07-07";
+    private const string BusinessCaseApiVersion = "2024-03-03-preview";
+
+    // Full URLs
+    private static readonly string AzureResourceGraphUrl = $"{AzureManagementBaseUrl}/providers/Microsoft.ResourceGraph/resources?api-version={ResourceGraphApiVersion}";
+    private static readonly string[] ManagementScopes = new[] { $"{AzureManagementBaseUrl}/.default" };
+    private readonly CustomChainedCredential _credential = credential ?? new CustomChainedCredential();
+
+    /// <summary>
+    /// Lists all migration projects in a subscription.
+    /// </summary>
+    /// <param name="subscriptionId">The subscription ID.</param>
+    /// <returns>A dictionary containing project names and their IDs.</returns>
     public async Task<Dictionary<string, string>> ListMigrationProjects(string subscriptionId)
     {
-        var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
-        {
-            throw new Exception("Failed to obtain access token.");
-        }
-
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
-
         var requestBody = new
         {
             subscriptions = new[] { subscriptionId },
@@ -31,18 +36,11 @@ public class MigrationService : IMigrationService
                 | where type =~ 'microsoft.migrate/migrateprojects'"
         };
 
-        string jsonBody = JsonSerializer.Serialize(requestBody);
-
-        var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-
-        var response = await httpClient.PostAsync(ARGurl, content);
-        var responseContent = await response.Content.ReadAsStringAsync();
-
-        var doc = JsonDocument.Parse(responseContent);
-        var root = doc.RootElement;
+        var response = await ExecuteResourceGraphQueryAsync(requestBody);
         var projects = new Dictionary<string, string>();
 
-        if (root.TryGetProperty("data", out var dataElement) && dataElement.ValueKind == JsonValueKind.Array)
+        if (response.RootElement.TryGetProperty("data", out var dataElement) &&
+            dataElement.ValueKind == JsonValueKind.Array)
         {
             foreach (var element in dataElement.EnumerateArray())
             {
@@ -59,13 +57,73 @@ public class MigrationService : IMigrationService
         return projects;
     }
 
+    /// <summary>
+    /// Summarizes the inventory for a given migration project.
+    /// </summary>
+    /// <param name="projectName">The name of the migration project.</param>
+    /// <param name="subscription">The subscription ID.</param>
+    /// <returns>A JSON document containing inventory summary.</returns>
     public async Task<JsonDocument> SummarizeInventoryAsync(string projectName, string subscription)
     {
-        var masterSiteId = await getMasterSiteId(projectName, subscription);
-        var sites = await getSitesFromMasterSiteId(masterSiteId);
+        var masterSiteId = await GetMasterSiteIdAsync(projectName, subscription);
+        var sites = await GetSitesFromMasterSiteIdAsync(masterSiteId);
         var conditions = sites.Select(site => $"['id'] has '{site}'").ToList();
         var conditionsString = string.Join(" or ", conditions);
-        var queryString = $@"
+        var queryString = GenerateInventorySummaryQuery(conditionsString);
+
+        var requestBody = new
+        {
+            subscriptions = new[] { subscription },
+            query = queryString
+        };
+
+        return await ExecuteResourceGraphQueryAsync(requestBody);
+    }
+
+    /// <summary>
+    /// Gets details for a specific migration project.
+    /// </summary>
+    /// <param name="projectName">The name of the migration project.</param>
+    /// <param name="subscriptionId">The subscription ID.</param>
+    /// <returns>A JSON document containing project details.</returns>
+    public async Task<JsonDocument> GetProjectDetailsAsync(string projectName, string subscriptionId)
+    {
+        try
+        {
+            var projects = await ListMigrationProjects(subscriptionId);
+            var projectId = projects.FirstOrDefault(p => p.Key == projectName).Value;
+
+            if (string.IsNullOrEmpty(projectId))
+            {
+                throw new KeyNotFoundException($"Project '{projectName}' not found in subscription '{subscriptionId}'");
+            }
+            var projectDetailsUri = $"{AzureManagementBaseUrl}{projectId}?api-version={MigrateProjectApiVersion}";
+            return await ExecuteHttpGetRequestAsync(projectDetailsUri);
+        }
+        catch (Exception ex)
+        {
+            throw new Exception($"Error fetching project details: {ex.Message}", ex);
+        }
+    }
+
+    /// <summary>
+    /// Summarizes business case for a migration project.
+    /// </summary>
+    /// <param name="projectName">The name of the migration project.</param>
+    /// <param name="subscriptionId">The subscription ID.</param>
+    /// <returns>A JSON document containing business case summary.</returns>
+    public async Task<JsonDocument> SummarizeBusinessCaseAsync(string projectName, string subscriptionId)
+    {
+        var assessmentProjectId = await GetAssessmentProjectIdAsync(projectName, subscriptionId);
+        var businessCaseId = await GetBusinessCasesFromAssessmentProjectIdAsync(assessmentProjectId);
+        var businessCaseSummaryUri = $"{AzureManagementBaseUrl}{businessCaseId}/overviewsummaries/default?api-version={BusinessCaseApiVersion}";
+
+        return await ExecuteHttpGetRequestAsync(businessCaseSummaryUri);
+    }
+
+    private static string GenerateInventorySummaryQuery(string conditionsString)
+    {
+        return $@"
 migrateresources
 | where ['type'] in (""microsoft.offazure/vmwaresites/machines"", ""microsoft.offazure/serversites/machines"", ""microsoft.offazure/hypervsites/machines"", ""microsoft.offazure/importsites/machines"", ""microsoft.offazure/mastersites/sqlsites/sqlservers"", ""microsoft.offazure/mastersites/webappsites/iiswebapplications"", ""microsoft.offazure/mastersites/webappsites/tomcatwebapplications"", ""microsoft.offazure/importsites/machines"")
 | where {conditionsString}
@@ -103,65 +161,33 @@ migrateresources
         Webapps = countif(['type'] in~(""microsoft.offazure/mastersites/webappsites/iiswebapplications"", ""microsoft.offazure/mastersites/webappsites/tomcatwebapplications""))
         | extend total = Infrastructure + Databases + Webapps
         ";
-        var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
-        {
-            throw new Exception("Failed to obtain access token.");
-        }
-
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
-
-        var requestBody = new
-        {
-            subscriptions = new[] { subscription },
-            query = queryString
-        };
-
-        string jsonBody = JsonSerializer.Serialize(requestBody);
-
-        var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
-
-        var response = await httpClient.PostAsync(ARGurl, content);
-        var responseContent = await response.Content.ReadAsStringAsync();
-
-        var doc = JsonDocument.Parse(responseContent);
-        return doc;
     }
 
-    public async Task<string> getMasterSiteId(string projectName, string subscription)
+    private async Task<string> GetMasterSiteIdAsync(string projectName, string subscription)
     {
-        var projects = ListMigrationProjects(subscription).Result;
+        var projects = await ListMigrationProjects(subscription);
         var projectId = projects.FirstOrDefault(p => p.Key == projectName).Value;
-        var solutionsUri = "https://management.azure.com" + projectId + "/solutions?api-version=2020-06-01-preview";
-        var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
+        if (string.IsNullOrEmpty(projectId))
         {
-            throw new Exception("Failed to obtain access token.");
+            throw new KeyNotFoundException($"Project '{projectName}' not found in subscription '{subscription}'");
         }
 
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
+        var solutionsUri = $"https://management.azure.com{projectId}/solutions?api-version=2020-06-01-preview";
+        var response = await ExecuteHttpGetRequestAsync(solutionsUri);
 
-        var response = await httpClient.GetAsync(solutionsUri);
-        if (response.StatusCode != System.Net.HttpStatusCode.OK)
-        {
-            throw new Exception($"Failed to get solutions. Status code: {response.StatusCode}");
-        }
-        var responseContent = await response.Content.ReadAsStringAsync();
-        JsonDocument doc = JsonDocument.Parse(responseContent);
-        JsonElement root = doc.RootElement;
+        var root = response.RootElement;
         string masterSiteIdValue = string.Empty;
-        if (root.TryGetProperty("value", out JsonElement values))
+
+        if (root.TryGetProperty("value", out var values))
         {
-            foreach (JsonElement solution in values.EnumerateArray())
+            foreach (var solution in values.EnumerateArray())
             {
                 if (solution.GetProperty("name").GetString() == "Servers-Discovery-ServerDiscovery")
                 {
-                    if (solution.TryGetProperty("properties", out JsonElement properties) &&
-                        properties.TryGetProperty("details", out JsonElement details) &&
-                        details.TryGetProperty("extendedDetails", out JsonElement extendedDetails) &&
-                        extendedDetails.TryGetProperty("masterSiteId", out JsonElement masterSiteId))
+                    if (solution.TryGetProperty("properties", out var properties) &&
+                        properties.TryGetProperty("details", out var details) &&
+                        details.TryGetProperty("extendedDetails", out var extendedDetails) &&
+                        extendedDetails.TryGetProperty("masterSiteId", out var masterSiteId))
                     {
                         masterSiteIdValue = masterSiteId.GetString() ?? string.Empty;
                         break;
@@ -169,128 +195,78 @@ migrateresources
                 }
             }
         }
+
         return masterSiteIdValue;
     }
 
-    public async Task<List<string>> getSitesFromMasterSiteId(string masterSiteId)
+    private async Task<List<string>> GetSitesFromMasterSiteIdAsync(string masterSiteId)
     {
-        var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
+        if (string.IsNullOrEmpty(masterSiteId))
         {
-            throw new Exception("Failed to obtain access token.");
+            throw new ArgumentException("Master site ID cannot be null or empty", nameof(masterSiteId));
         }
 
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
+        var masterSiteIdUri = $"{AzureManagementBaseUrl}{masterSiteId}?api-version={MasterSiteApiVersion}";
+        var response = await ExecuteHttpGetRequestAsync(masterSiteIdUri);
 
-        var masterSiteIdUri = "https://management.azure.com" + masterSiteId + "?api-version=2020-07-07";
-        if (string.IsNullOrEmpty(accessToken.Token))
-        {
-            throw new Exception("Failed to obtain access token.");
-        }
-
-        var response = await httpClient.GetAsync(masterSiteIdUri);
-        var responseContent = await response.Content.ReadAsStringAsync();
         var result = new List<string>();
+        var root = response.RootElement;
 
-        try
+        if (root.TryGetProperty("properties", out var properties))
         {
-            using var jsonDoc = JsonDocument.Parse(responseContent);
-            var root = jsonDoc.RootElement;
-
-            if (root.TryGetProperty("properties", out var properties))
+            if (properties.TryGetProperty("sites", out var sites) && sites.ValueKind == JsonValueKind.Array)
             {
-                if (properties.TryGetProperty("sites", out var sites) && sites.ValueKind == JsonValueKind.Array)
+                foreach (var site in sites.EnumerateArray())
                 {
-                    foreach (var site in sites.EnumerateArray())
+                    var siteValue = site.GetString();
+                    if (!string.IsNullOrEmpty(siteValue))
                     {
-                        result.Add(site.GetString() ?? string.Empty);
-                    }
-                }
-
-                if (properties.TryGetProperty("nestedSites", out var nestedSites) && nestedSites.ValueKind == JsonValueKind.Array)
-                {
-                    foreach (var nestedSite in nestedSites.EnumerateArray())
-                    {
-                        result.Add(nestedSite.GetString() ?? string.Empty);
+                        result.Add(siteValue);
                     }
                 }
             }
-        }
-        catch (Exception ex)
-        {
-            throw new Exception("Error parsing response JSON: " + ex.Message);
+
+            if (properties.TryGetProperty("nestedSites", out var nestedSites) && nestedSites.ValueKind == JsonValueKind.Array)
+            {
+                foreach (var nestedSite in nestedSites.EnumerateArray())
+                {
+                    var nestedSiteValue = nestedSite.GetString();
+                    if (!string.IsNullOrEmpty(nestedSiteValue))
+                    {
+                        result.Add(nestedSiteValue);
+                    }
+                }
+            }
         }
 
         return result;
     }
 
-    public async Task<JsonDocument> GetProjectDetailsAsync(string projectName, string subscriptionId)
-    {
-        // Simulate fetching project details
-        try
-        {
-            var projects = await ListMigrationProjects(subscriptionId);
-            var projectId = projects.FirstOrDefault(p => p.Key == projectName).Value;
-            var projectDetailsUri = "https://management.azure.com" + projectId + "?api-version=2020-06-01-preview";
-            var accessToken = await GetAccessTokenAsync();
-            if (string.IsNullOrEmpty(accessToken.Token))
-            {
-                throw new Exception("Failed to obtain access token.");
-            }
-            using var httpClient = new HttpClient();
-            httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
-
-            var response = await httpClient.GetAsync(projectDetailsUri);
-            var responseContent = await response.Content.ReadAsStringAsync();
-            var doc = JsonDocument.Parse(responseContent);
-            return doc;
-        }
-        catch (Exception ex)
-        {
-            throw new Exception($"Error fetching project details: {ex.Message}", ex);
-        }
-    }
-
-    public async Task<AccessToken> GetAccessTokenAsync()
-    {
-        var credential = new CustomChainedCredential();
-        return await credential.GetTokenAsync(new TokenRequestContext(new[] { "https://management.azure.com/.default" }), cancellationToken: default);
-    }
-
-    public async Task<string> getAssessmentProjectId(string projectName, string subscriptionId)
+    private async Task<string> GetAssessmentProjectIdAsync(string projectName, string subscriptionId)
     {
         var projects = await ListMigrationProjects(subscriptionId);
         var projectId = projects.FirstOrDefault(p => p.Key == projectName).Value;
-        var solutionsUri = "https://management.azure.com" + projectId + "/solutions?api-version=2020-06-01-preview";
-        var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
+
+        if (string.IsNullOrEmpty(projectId))
         {
-            throw new Exception("Failed to obtain access token.");
+            throw new KeyNotFoundException($"Project '{projectName}' not found in subscription '{subscriptionId}'");
         }
 
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
+        var solutionsUri = $"https://management.azure.com{projectId}/solutions?api-version=2020-06-01-preview";
+        var response = await ExecuteHttpGetRequestAsync(solutionsUri);
+        var root = response.RootElement;
 
-        var response = await httpClient.GetAsync(solutionsUri);
-        if (response.StatusCode != System.Net.HttpStatusCode.OK)
-        {
-            throw new Exception($"Failed to get solutions. Status code: {response.StatusCode}");
-        }
-        var responseContent = await response.Content.ReadAsStringAsync();
-        JsonDocument doc = JsonDocument.Parse(responseContent);
-        JsonElement root = doc.RootElement;
         string assessmentProjectId = string.Empty;
-        if (root.TryGetProperty("value", out JsonElement values))
+        if (root.TryGetProperty("value", out var values))
         {
-            foreach (JsonElement solution in values.EnumerateArray())
+            foreach (var solution in values.EnumerateArray())
             {
                 if (solution.GetProperty("name").GetString() == "Servers-Assessment-ServerAssessment")
                 {
-                    if (solution.TryGetProperty("properties", out JsonElement properties) &&
-                        properties.TryGetProperty("details", out JsonElement details) &&
-                        details.TryGetProperty("extendedDetails", out JsonElement extendedDetails) &&
-                        extendedDetails.TryGetProperty("projectId", out JsonElement assessmentProjectIdElement))
+                    if (solution.TryGetProperty("properties", out var properties) &&
+                        properties.TryGetProperty("details", out var details) &&
+                        details.TryGetProperty("extendedDetails", out var extendedDetails) &&
+                        extendedDetails.TryGetProperty("projectId", out var assessmentProjectIdElement))
                     {
                         assessmentProjectId = assessmentProjectIdElement.GetString() ?? string.Empty;
                         break;
@@ -298,62 +274,88 @@ migrateresources
                 }
             }
         }
+
         return assessmentProjectId;
     }
 
-    public async Task<string> getBusinessCasesFromAssessmentProjectId(string assessmentProjectId)
+    private async Task<string> GetBusinessCasesFromAssessmentProjectIdAsync(string assessmentProjectId)
     {
-        var businessCaseUri = "https://management.azure.com" + assessmentProjectId + "/businessCases/?api-version=2024-03-03-preview&pageSize=30";
-        var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
+        if (string.IsNullOrEmpty(assessmentProjectId))
         {
-            throw new Exception("Failed to obtain access token.");
+            throw new ArgumentException("Assessment project ID cannot be null or empty", nameof(assessmentProjectId));
         }
 
-        using var httpClient = new HttpClient();
-        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
+        var businessCaseUri = $"{AzureManagementBaseUrl}{assessmentProjectId}/businessCases/?api-version={BusinessCaseApiVersion}&pageSize=30";
+        var response = await ExecuteHttpGetRequestAsync(businessCaseUri);
 
-        var response = await httpClient.GetAsync(businessCaseUri);
-        if (response.StatusCode != System.Net.HttpStatusCode.OK)
-        {
-            throw new Exception($"Failed to get business cases. Status code: {response.StatusCode}");
-        }
-        var responseContent = await response.Content.ReadAsStringAsync();
-        JsonDocument doc = JsonDocument.Parse(responseContent);
-        JsonElement root = doc.RootElement;
+        var root = response.RootElement;
         string businessCaseId = string.Empty;
-        if (root.TryGetProperty("value", out JsonElement values))
+
+        if (root.TryGetProperty("value", out var values))
         {
-            foreach (JsonElement solution in values.EnumerateArray())
+            foreach (var businessCase in values.EnumerateArray())
             {
-                if (!string.IsNullOrEmpty(solution.GetProperty("id").GetString()))
+                var id = businessCase.GetProperty("id").GetString();
+                if (!string.IsNullOrEmpty(id))
                 {
-                    businessCaseId = solution.GetProperty("id").GetString() ?? string.Empty;
+                    businessCaseId = id;
+                    break;
                 }
             }
         }
+
         return businessCaseId;
     }
 
-    public async Task<JsonDocument> SummarizeBusinessCaseAsync(string projectName, string subscriptionId)
+    private async Task<AccessToken> GetAccessTokenAsync()
     {
-        var assessmentProjectId = await getAssessmentProjectId(projectName, subscriptionId);
-        var businessCaseId = await getBusinessCasesFromAssessmentProjectId(assessmentProjectId);
-        var businessCaseSummaryUri = "https://management.azure.com" + businessCaseId + "/overviewsummaries/default?api-version=2024-03-03-preview";
+        return await _credential.GetTokenAsync(new TokenRequestContext(ManagementScopes), cancellationToken: default);
+    }
+
+    private async Task<JsonDocument> ExecuteHttpGetRequestAsync(string uri)
+    {
         var accessToken = await GetAccessTokenAsync();
-        if (string.IsNullOrEmpty(accessToken.Token))
-        {
-            throw new Exception("Failed to obtain access token.");
-        }
+        EnsureValidAccessToken(accessToken);
+
         using var httpClient = new HttpClient();
         httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
-        var response = await httpClient.GetAsync(businessCaseSummaryUri);
-        if (response.StatusCode != System.Net.HttpStatusCode.OK)
+
+        var response = await httpClient.GetAsync(uri);
+        if (!response.IsSuccessStatusCode)
         {
-            throw new Exception($"Failed to get business case summary. Status code: {response.StatusCode}");
+            throw new HttpRequestException($"HTTP request failed with status code: {response.StatusCode}. Uri: {uri}");
         }
+
         var responseContent = await response.Content.ReadAsStringAsync();
-        JsonDocument doc = JsonDocument.Parse(responseContent);
-        return doc;
+        return JsonDocument.Parse(responseContent);
+    }
+
+    private async Task<JsonDocument> ExecuteResourceGraphQueryAsync(object requestBody)
+    {
+        var accessToken = await GetAccessTokenAsync();
+        EnsureValidAccessToken(accessToken);
+
+        using var httpClient = new HttpClient();
+        httpClient.DefaultRequestHeaders.Authorization = new System.Net.Http.Headers.AuthenticationHeaderValue("Bearer", accessToken.Token);
+
+        string jsonBody = JsonSerializer.Serialize(requestBody);
+        var content = new StringContent(jsonBody, Encoding.UTF8, "application/json");
+
+        var response = await httpClient.PostAsync(AzureResourceGraphUrl, content);
+        if (!response.IsSuccessStatusCode)
+        {
+            throw new HttpRequestException($"Resource Graph query failed with status code: {response.StatusCode}");
+        }
+
+        var responseContent = await response.Content.ReadAsStringAsync();
+        return JsonDocument.Parse(responseContent);
+    }
+
+    private static void EnsureValidAccessToken(AccessToken accessToken)
+    {
+        if (string.IsNullOrEmpty(accessToken.Token))
+        {
+            throw new UnauthorizedAccessException("Failed to obtain a valid access token for the Azure Management API");
+        }
     }
 }

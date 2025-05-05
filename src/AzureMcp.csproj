@@ -1,6 +1,4 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
-
-  <PropertyGroup>
+﻿<Project Sdk="Microsoft.NET.Sdk.Web">  <PropertyGroup>
     <Version>0.0.12</Version>
     <OutputType>Exe</OutputType>
     <CliName>azmcp</CliName>
@@ -16,6 +14,8 @@
     <IncludeNativeLibrariesForSelfExtract>true</IncludeNativeLibrariesForSelfExtract>
     <DebugType>embedded</DebugType>
     <AllowUnsafeBlocks>true</AllowUnsafeBlocks>
+    <UserSecretsId>a208e98e-910c-4ccf-94e9-fa0cfc30f505</UserSecretsId>
+
   </PropertyGroup>
 
   <!-- Debug configuration -->
@@ -32,8 +32,14 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+    <None Update="appsettings.json">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </None>
   </ItemGroup>
+  <!-- AspNetCore App framework reference is already included in the Microsoft.NET.Sdk.Web -->
+  <!-- <ItemGroup>
+    <FrameworkReference Include="Microsoft.AspNetCore.App" />
+  </ItemGroup> -->
 
   <ItemGroup>
     <RuntimeHostConfigurationOption Include="Azure.Experimental.EnableActivitySource" Value="true" />
@@ -74,21 +80,16 @@
   <!-- Runs before every dotnet build -->
   <Target Name="InstallGitHooks" BeforeTargets="BeforeBuild">
     <!-- ensure the .git/hooks folder exists -->
-    <MakeDir Condition="!Exists('$(MSBuildProjectDirectory)/../.git/hooks')" 
-             Directories="$(MSBuildProjectDirectory)/../.git/hooks" />
+    <MakeDir Condition="!Exists('$(MSBuildProjectDirectory)/../.git/hooks')" Directories="$(MSBuildProjectDirectory)/../.git/hooks" />
 
     <!-- copy only changed files -->
-    <Copy SourceFiles="@(GitHookFiles)" 
-          DestinationFolder="$(MSBuildProjectDirectory)/../.git/hooks"
-          SkipUnchangedFiles="true" />
+    <Copy SourceFiles="@(GitHookFiles)" DestinationFolder="$(MSBuildProjectDirectory)/../.git/hooks" SkipUnchangedFiles="true" />
 
     <!-- on mac/linux, make sure they're executable -->
-    <Exec Condition="Exists('$(MSBuildProjectDirectory)/../.git/hooks/pre-commit') and '$(OS)' != 'Windows_NT'"
-          Command="chmod +x &quot;$(MSBuildProjectDirectory)/../.git/hooks/pre-commit&quot;" />
+    <Exec Condition="Exists('$(MSBuildProjectDirectory)/../.git/hooks/pre-commit') and '$(OS)' != 'Windows_NT'" Command="chmod +x &quot;$(MSBuildProjectDirectory)/../.git/hooks/pre-commit&quot;" />
 
     <!-- on Windows, make sure they're executable -->
-    <Exec Condition="Exists('$(MSBuildProjectDirectory)/../.git/hooks/pre-commit') and '$(OS)' == 'Windows_NT'"
-          Command="attrib +x &quot;$(MSBuildProjectDirectory)/../.git/hooks/pre-commit&quot;" />
+    <Exec Condition="Exists('$(MSBuildProjectDirectory)/../.git/hooks/pre-commit') and '$(OS)' == 'Windows_NT'" Command="attrib +x &quot;$(MSBuildProjectDirectory)/../.git/hooks/pre-commit&quot;" />
   </Target>
 
   <!-- gather all hook scripts under Scripts/git-hooks -->

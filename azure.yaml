@@ -1,0 +1,7 @@
+name: azure-mcp
+services:
+  web:
+    project: src
+    language: dotnet
+    host: appservice
+    resourceDependencies: []

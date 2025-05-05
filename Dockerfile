@@ -2,7 +2,9 @@
 FROM mcr.microsoft.com/dotnet/sdk:9.0.102-bookworm-slim AS build
 WORKDIR /src
 
-# Copy csproj and restore dependencies
+# Copy project files and Directory.Build.props for target framework reference
+COPY ["Directory.Build.props", "."]
+COPY ["Directory.Packages.props", "."]
 COPY ["src/AzureMcp.csproj", "src/"]
 RUN dotnet restore "src/AzureMcp.csproj"
 
@@ -28,7 +30,10 @@ RUN apt-get update && apt-get install -y \
     lsb-release \
     gnupg \
     && curl -sL https://aka.ms/InstallAzureCLIDeb | bash \
-    && rm -rf /var/lib/apt/lists/*
+    && apt-get clean \
+    && rm -rf /var/lib/apt/lists/* \
+    # Create a non-root user for better security
+    && adduser --disabled-password --gecos "" appuser
 
 # Copy the published application
 COPY --from=publish /app/publish .
@@ -37,7 +42,7 @@ COPY --from=publish /app/publish .
 # the tranport can be set to "stdio" or "sse".
 # "stdio" is the default mode and uses standard input/output for communication.
 # "sse" is the server-sent events mode and uses HTTP for communication.
-ENV AZMCP_TRANSPORT=stdio
+ENV AZMCP_TRANSPORT=sse
 # The port is used by the "sse" transport mode only, and defaults to 5008.
 ENV AZMCP_PORT=5008
 
@@ -65,6 +70,12 @@ else\n\
     dotnet azmcp.dll "$@"\n\
 fi' > /app/docker-entrypoint.sh \
     && chmod +x /app/docker-entrypoint.sh
+
+# Set permissions for the non-root user
+RUN chown -R appuser:appuser /app
+
+# Switch to non-root user for better security
+USER appuser
 
 # Set the entry point and default command for the container
 ENTRYPOINT ["/app/docker-entrypoint.sh"]

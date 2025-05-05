@@ -1,11 +1,11 @@
+using System.CommandLine;
+using System.CommandLine.Parsing;
 using AzureMcp.Arguments.Migration;
 using AzureMcp.Models.Argument;
 using AzureMcp.Models.Command;
 using AzureMcp.Services.Interfaces;
 using Microsoft.Extensions.Logging;
 using ModelContextProtocol.Server;
-using System.CommandLine;
-using System.CommandLine.Parsing;
 
 namespace AzureMcp.Commands.Migration;
 
@@ -55,7 +55,7 @@ public sealed class ProjectDetailCommand(ILogger<ProjectDetailCommand> logger) :
 
         try
         {
-            if(!await ProcessArguments(context, args))
+            if (!await ProcessArguments(context, args))
             {
                 return context.Response;
             }
