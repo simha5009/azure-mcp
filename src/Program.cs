@@ -9,6 +9,7 @@ using AzureMcp.Commands;
 using AzureMcp.Extensions;
 using AzureMcp.Models.Command;
 using AzureMcp.Services.Azure;
+using ModelContextProtocol.Protocol.Types;
 using AzureMcp.Services.Azure.AppConfig;
 using AzureMcp.Services.Azure.Cosmos;
 using AzureMcp.Services.Azure.Monitor;
@@ -24,7 +25,9 @@ using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
+using Microsoft.Extensions.Options;
 using ModelContextProtocol.Server;
+using AzureMcp.Commands.Server;
 
 // Create a web application
 var builder = WebApplication.CreateBuilder(args);
@@ -32,21 +35,34 @@ var builder = WebApplication.CreateBuilder(args);
 // Configure services for MCP
 ConfigureServices(builder.Services);
 
-// Add MCP server services
-builder.Services.AddMcpServer(options =>
-{
-    var entryAssembly = Assembly.GetEntryAssembly();
-    var assemblyName = entryAssembly?.GetName();
-    var serverName = entryAssembly?.GetCustomAttribute<AssemblyTitleAttribute>()?.Title ?? "Azure MCP Server";
+// Register ToolOperations for MCP server
+builder.Services.AddSingleton<AzureMcp.Commands.Server.ToolOperations>();
 
-    options.ServerInfo = new ModelContextProtocol.Protocol.Types.Implementation
+// Configure MCP server options using the options pattern
+builder.Services.AddOptions<McpServerOptions>()
+    .Configure<AzureMcp.Commands.Server.ToolOperations>((options, toolOperations) =>
     {
-        Name = serverName,
-        Version = assemblyName?.Version?.ToString() ?? "1.0.0-beta"
-    };
+        var entryAssembly = Assembly.GetEntryAssembly();
+        var assemblyName = entryAssembly?.GetName();
+        var serverName = entryAssembly?.GetCustomAttribute<AssemblyTitleAttribute>()?.Title ?? "Azure MCP Server";
 
-    options.ProtocolVersion = "2024-11-05";
-}).WithHttpTransport();
+        options.ServerInfo = new ModelContextProtocol.Protocol.Types.Implementation
+        {
+            Name = serverName,
+            Version = assemblyName?.Version?.ToString() ?? "1.0.0-beta"
+        };
+
+        // Register tool capabilities
+        options.Capabilities = new ModelContextProtocol.Protocol.Types.ServerCapabilities
+        {
+            Tools = toolOperations.ToolsCapability
+        };
+
+        options.ProtocolVersion = "2024-11-05";
+    });
+
+// Add MCP server services
+builder.Services.AddMcpServer().WithHttpTransport();
 
 // Build the application
 var app = builder.Build();
