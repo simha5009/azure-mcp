@@ -5,11 +5,12 @@ using System.CommandLine;
 using System.Linq;
 using System.Reflection;
 using System.Text.Json;
+
 using AzureMcp.Commands;
+using AzureMcp.Commands.Server;
 using AzureMcp.Extensions;
 using AzureMcp.Models.Command;
 using AzureMcp.Services.Azure;
-using ModelContextProtocol.Protocol.Types;
 using AzureMcp.Services.Azure.AppConfig;
 using AzureMcp.Services.Azure.Cosmos;
 using AzureMcp.Services.Azure.Monitor;
@@ -20,14 +21,16 @@ using AzureMcp.Services.Azure.Tenant;
 using AzureMcp.Services.Caching;
 using AzureMcp.Services.Interfaces;
 using AzureMcp.Services.ProcessExecution;
+
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Http;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using Microsoft.Extensions.Options;
+
+using ModelContextProtocol.Protocol.Types;
 using ModelContextProtocol.Server;
-using AzureMcp.Commands.Server;
 
 // Create a web application
 var builder = WebApplication.CreateBuilder(args);
@@ -36,24 +39,23 @@ var builder = WebApplication.CreateBuilder(args);
 ConfigureServices(builder.Services);
 
 // Register ToolOperations for MCP server
-builder.Services.AddSingleton<AzureMcp.Commands.Server.ToolOperations>();
+builder.Services.AddSingleton<ToolOperations>();
 
 // Configure MCP server options using the options pattern
 builder.Services.AddOptions<McpServerOptions>()
-    .Configure<AzureMcp.Commands.Server.ToolOperations>((options, toolOperations) =>
+    .Configure<ToolOperations>((options, toolOperations) =>
     {
         var entryAssembly = Assembly.GetEntryAssembly();
         var assemblyName = entryAssembly?.GetName();
         var serverName = entryAssembly?.GetCustomAttribute<AssemblyTitleAttribute>()?.Title ?? "Azure MCP Server";
-
-        options.ServerInfo = new ModelContextProtocol.Protocol.Types.Implementation
+        options.ServerInfo = new Implementation
         {
             Name = serverName,
             Version = assemblyName?.Version?.ToString() ?? "1.0.0-beta"
         };
 
         // Register tool capabilities
-        options.Capabilities = new ModelContextProtocol.Protocol.Types.ServerCapabilities
+        options.Capabilities = new ServerCapabilities
         {
             Tools = toolOperations.ToolsCapability
         };
